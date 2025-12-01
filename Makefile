@@ -216,8 +216,12 @@ db-restore: ## Restore database (usage: make db-restore file=backup.sql)
 
 # ==================== UTILITY ====================
 
-install: ## Install dependencies
+install: ## Install dependencies and generate key
 	$(DC) exec app composer install
+	@if [ -z "$$(grep '^APP_KEY=base64:' .env 2>/dev/null)" ]; then \
+		echo "$(YELLOW)Generating application key...$(NC)"; \
+		$(DC) exec app php artisan key:generate; \
+	fi
 
 update: ## Update dependencies
 	$(DC) exec app composer update
