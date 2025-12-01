@@ -1,0 +1,257 @@
+###############################################################################
+# E-Commerce Backend - Docker Compose Production
+# Optimized for production deployment
+###############################################################################
+
+services:
+  #---------------------------------------------------------------------------
+  # PHP-FPM Application (Production)
+  #---------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: ecommerce-app
+    restart: always
+    working_dir: /var/www/html
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecommerce-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+  #---------------------------------------------------------------------------
+  # Nginx Web Server (Production)
+  #---------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: ecommerce-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/default.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./docker/nginx/ssl:/etc/nginx/ssl:ro
+      - static-files:/var/www/html/public:ro
+    depends_on:
+      - app
+    networks:
+      - ecommerce-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+
+  #---------------------------------------------------------------------------
+  # MySQL Database (Production)
+  #---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: ecommerce-mysql
+    restart: always
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql/my.prod.cnf:/etc/mysql/conf.d/my.cnf:ro
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  #---------------------------------------------------------------------------
+  # Redis Cache & Queue (Production)
+  #---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: ecommerce-redis
+    restart: always
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  #---------------------------------------------------------------------------
+  # Elasticsearch (Production)
+  #---------------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: ecommerce-elasticsearch
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${ELASTICSEARCH_PASSWORD}
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - cluster.name=ecommerce-cluster
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -vq '\"status\":\"red\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  #---------------------------------------------------------------------------
+  # Kibana (Production)
+  #---------------------------------------------------------------------------
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: ecommerce-kibana
+    restart: always
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - ecommerce-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  #---------------------------------------------------------------------------
+  # Logstash (Production)
+  #---------------------------------------------------------------------------
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: ecommerce-logstash
+    restart: always
+    volumes:
+      - ./docker/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./docker/logstash/config/logstash.prod.yml:/usr/share/logstash/config/logstash.yml:ro
+    environment:
+      - "LS_JAVA_OPTS=-Xms512m -Xmx512m"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - ecommerce-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+  #---------------------------------------------------------------------------
+  # Laravel Horizon (Production)
+  #---------------------------------------------------------------------------
+  horizon:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: ecommerce-horizon
+    restart: always
+    command: php artisan horizon
+    depends_on:
+      - app
+      - redis
+    networks:
+      - ecommerce-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  #---------------------------------------------------------------------------
+  # Laravel Scheduler (Production)
+  #---------------------------------------------------------------------------
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: ecommerce-scheduler
+    restart: always
+    command: >
+      sh -c "while true; do php artisan schedule:run --verbose --no-interaction & sleep 60; done"
+    depends_on:
+      - app
+    networks:
+      - ecommerce-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+#-----------------------------------------------------------------------------
+# Networks
+#-----------------------------------------------------------------------------
+networks:
+  ecommerce-network:
+    driver: bridge
+
+#-----------------------------------------------------------------------------
+# Volumes
+#-----------------------------------------------------------------------------
+volumes:
+  mysql-data:
+    driver: local
+  redis-data:
+    driver: local
+  elasticsearch-data:
+    driver: local
+  static-files:
+    driver: local

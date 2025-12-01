@@ -1,0 +1,22 @@
+includes:
+    - ./vendor/larastan/larastan/extension.neon
+
+parameters:
+    paths:
+        - app
+        - config
+        - routes
+
+    level: 6
+
+    excludePaths:
+        - bootstrap/cache
+
+    ignoreErrors:
+        - '#Unsafe usage of new static#'
+        - '#Call to an undefined method Illuminate\\Database\\Eloquent\\Builder#'
+
+    reportUnmatchedIgnoredErrors: false
+
+    # Laravel specific
+    treatPhpDocTypesAsCertain: false

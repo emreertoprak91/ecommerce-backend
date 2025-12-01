@@ -1,0 +1,118 @@
+#------------------------------------------------------------------------------
+# E-Commerce Backend - Production Dockerfile
+# PHP 8.4 FPM Optimized for Production
+#------------------------------------------------------------------------------
+
+FROM php:8.4-fpm-alpine AS base
+
+LABEL maintainer="E-Commerce Team"
+LABEL description="Laravel E-Commerce Backend - Production"
+
+# Install system dependencies (minimal for production)
+RUN apk add --no-cache \
+    bash \
+    curl \
+    libpng \
+    libjpeg-turbo \
+    freetype \
+    libzip \
+    icu-libs \
+    oniguruma \
+    libxml2
+
+# Build stage for PHP extensions
+FROM base AS builder
+
+RUN apk add --no-cache \
+    libpng-dev \
+    libjpeg-turbo-dev \
+    freetype-dev \
+    libzip-dev \
+    icu-dev \
+    oniguruma-dev \
+    libxml2-dev \
+    $PHPIZE_DEPS
+
+# Install PHP extensions
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j$(nproc) \
+        pdo \
+        pdo_mysql \
+        mysqli \
+        gd \
+        zip \
+        intl \
+        mbstring \
+        exif \
+        pcntl \
+        bcmath \
+        opcache \
+        xml \
+        soap
+
+# Install Redis extension
+RUN pecl install redis && docker-php-ext-enable redis
+
+# Production image
+FROM base AS production
+
+# Copy PHP extensions from builder
+COPY --from=builder /usr/local/lib/php/extensions/ /usr/local/lib/php/extensions/
+COPY --from=builder /usr/local/etc/php/conf.d/ /usr/local/etc/php/conf.d/
+
+# Install Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+# Configure PHP for production
+RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
+
+# Custom PHP production configuration
+COPY docker/php/php-prod.ini $PHP_INI_DIR/conf.d/99-custom.ini
+COPY docker/php/opcache.ini $PHP_INI_DIR/conf.d/opcache.ini
+
+# Set working directory
+WORKDIR /var/www/html
+
+# Copy application
+COPY --chown=www-data:www-data . .
+
+# Install dependencies (production only, no dev)
+RUN composer install \
+    --no-interaction \
+    --prefer-dist \
+    --optimize-autoloader \
+    --no-dev \
+    && rm -rf /root/.composer
+
+# Optimize Laravel
+RUN php artisan config:cache \
+    && php artisan route:cache \
+    && php artisan view:cache \
+    && php artisan event:cache
+
+# Set permissions
+RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache \
+    && chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
+
+# Remove unnecessary files
+RUN rm -rf \
+    .git \
+    .github \
+    tests \
+    docker \
+    .env.example \
+    phpunit.xml \
+    README.md \
+    .editorconfig \
+    .gitignore
+
+# Expose port
+EXPOSE 9000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD php-fpm -t || exit 1
+
+USER www-data
+
+CMD ["php-fpm"]
